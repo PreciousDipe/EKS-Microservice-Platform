@@ -101,13 +101,15 @@ kubectl -n $ENV get pods,httproute
 
 #### How the pipeline works
 
-The pipeline deploys **per branch**. Each long-lived branch maps to one environment: `develop` deploys to the `dev` namespace, `staging` to the `staging` namespace, and `production` to the `prod` namespace. Changes move up by pull request, from `develop` to `staging` to `production`, so the same code is tested in each environment before it reaches the next one.
+There is **one EKS cluster** with **three namespaces**, `dev`, `staging` and `prod`, and the pipeline keeps the application and the cluster separate.
 
-When you merge into one of those branches and the change touches `application/`, the **Helm Deploy** workflow runs. It signs in to AWS through GitHub OIDC, using the GitHub environment linked to that branch: `develop`, `staging` or `production`. From that environment's secrets and variables it builds the values for the image registry, image tags and passwords. It then runs `helm upgrade` into the matching namespace. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that touch `application/` don't deploy anything; they only lint the chart against all three environments. To ship a new image version without a code change, run Helm Deploy manually and enter the new tags.
+**Application (Helm Deploy): deployed per branch, to one namespace only.** Each long-lived branch maps to one namespace: `develop` to `dev`, `staging` to `staging`, and `production` to `prod`. When you push a change under `application/` to one of those branches, the **Helm Deploy** workflow updates **only that branch's namespace**, and the other two environments are not touched. It signs in to AWS through GitHub OIDC using the GitHub environment linked to the branch (`develop`, `staging` or `production`), builds the image registry, image tags and passwords from that environment's secrets and variables, and runs `helm upgrade` with that environment's `values-<env>.yaml`. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that change `application/` only lint the chart; they don't deploy anything. To redeploy an environment, or ship new image tags without a code change, run **Actions → Helm Deploy → Run workflow** and pick the environment.
 
-Infrastructure follows the same pull-request flow, but only on `production`. That's because there is one shared cluster, and changing it affects every environment. A pull request into `production` that touches `infrastructure/` runs `terraform plan` for the networking, eks and platform layers and posts each plan as a comment on the pull request. Merging the pull request runs `terraform apply` in that order. The Terraform state lives in S3 with native locking, so two runs can never change the same layer at once.
+A typical change goes like this: push it to `develop` and check it in `dev`, then merge `develop` into `staging` and check it there, then merge `staging` into `production` to release it to `prod`.
 
-After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it by hand against `staging`. It never runs against `prod`, because the tests delete pods and generate load.
+**Cluster (Deploy Infrastructure): changes rarely, and only from `production`.** The VPC, the EKS cluster and the shared add-ons (Gateway, cert-manager, external-dns, metrics-server and the namespaces themselves) are built once and shared by all three environments. You don't need this workflow to deploy the application. It only runs when files under `infrastructure/` change: a pull request with such a change gets a `terraform plan` posted as a comment, and pushing or merging it into `production` runs `terraform apply` for networking, eks and platform, in that order. Only one branch applies because there is a single Terraform state, kept in S3 with native locking. If two branches both applied, they would keep overwriting each other's changes to the same cluster.
+
+**Tests (Platform Tests).** After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it by hand against `staging`. It never runs against `prod`, because the tests delete pods and generate load.
 
 #### Differences between the environments
 
@@ -118,7 +120,7 @@ All three environments run the same chart in their own namespace on the same clu
 | Git branch | `develop` | `staging` | `production` |
 | Namespace / GitHub environment | `dev` / `develop` | `staging` / `staging` | `prod` / `production` |
 | URL | `dev.microservice-shop.preciousdipe.name.ng` | `staging.microservice-shop.preciousdipe.name.ng` | `prod.microservice-shop.preciousdipe.name.ng` |
-| Deployed by | merge to `develop` | merge to `staging` | merge to `production` (which also applies the infrastructure) |
+| App deployed by | push of an `application/` change to `develop` | push of an `application/` change to `staging` | push of an `application/` change to `production` |
 | frontend replicas (HPA) | 2–4 | 2–4 | 2–6 |
 | product / order-service replicas (HPA) | 2–4 each, scale at 50% CPU | 2–4 each, scale at 50% CPU | 2–10 each, scale at 60% CPU |
 | product / order-service resources | 100m CPU / 128Mi request, 500m / 256Mi limit | same as dev | 200m CPU / 192Mi request, 1 CPU / 384Mi limit |
