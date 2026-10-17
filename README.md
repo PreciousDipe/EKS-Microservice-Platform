@@ -109,38 +109,7 @@ helm upgrade --install microservice-shop ./application --namespace $ENV \
 
 kubectl -n $ENV get pods,httproute
 ```
-
-#### How the pipeline works
-
-There is **one EKS cluster** with **three namespaces**, `dev`, `staging` and `prod`, and the pipeline keeps the application and the cluster separate.
-
-**Application (Helm Deploy): deployed per branch, to one namespace only.** Each long-lived branch maps to one namespace: `develop` to `dev`, `staging` to `staging`, and `production` to `prod`. When you push a change under `application/` to one of those branches, the **Helm Deploy** workflow updates **only that branch's namespace**, and the other two environments are not touched. It signs in to AWS through GitHub OIDC using the GitHub environment linked to the branch (`develop`, `staging` or `production`), builds the image registry, image tags and passwords from that environment's secrets and variables, and runs `helm upgrade` with that environment's `values-<env>.yaml`. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that change `application/` only lint the chart; they don't deploy anything. To redeploy an environment, or ship new image tags without a code change, run **Actions → Helm Deploy → Run workflow** and pick the environment.
-
-**Cluster (Deploy Infrastructure): changes rarely, and only from `production`.** The VPC, the EKS cluster and the shared add-ons (Gateway, cert-manager, external-dns, metrics-server and the namespaces themselves) are built once and shared by all three environments. It runs when files under `infrastructure/` change: a pull request with such a change gets a `terraform plan` posted as a comment, and pushing or merging it into `production` runs `terraform apply` for networking, eks and platform, in that order.
-
-**Tests** After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it manually against `staging`.
-
-#### Differences between the environments
-
-All three environments run their chart in their own namespace on the same cluster, behind a Gateway API.
-
-| | dev | staging | prod |
-|---|---|---|---|
-| Git branch | `develop` | `staging` | `production` |
-| Namespace / GitHub environment | `dev` / `develop` | `staging` / `staging` | `prod` / `production` |
-| URL | `dev.microservice-shop.preciousdipe.name.ng` | `staging.microservice-shop.preciousdipe.name.ng` | `prod.microservice-shop.preciousdipe.name.ng` |
-| App deployed by | push of an `application/` change to `develop` | push of an `application/` change to `staging` | push of an `application/` change to `production` |
-| frontend replicas (HPA) | 2–4 | 2–4 | 2–6 |
-| product / order-service replicas (HPA) | 2–4 each, scale at 50% CPU | 2–4 each, scale at 50% CPU | 2–10 each, scale at 60% CPU |
-| product / order-service resources | 100m CPU / 128Mi request, 500m / 256Mi limit | same as dev | 200m CPU / 192Mi request, 1 CPU / 384Mi limit |
-| PostgreSQL | 512Mi volume, 250m CPU / 256Mi request | 2Gi volume, same CPU / memory as dev | 10Gi volume, 500m CPU / 512Mi request, 2 CPU / 1Gi limit |
-| Pod disruption budget | at least 1 pod per service | at least 1 pod per service | at least 2 pods per service |
-| Namespace quota (requests / limits) | 2 CPU · 4Gi / 8 CPU · 8Gi, 30 pods | 2 CPU · 4Gi / 8 CPU · 8Gi, 30 pods | 4 CPU · 8Gi / 16 CPU · 16Gi, 60 pods |
-| Default container size (no requests set) | 100m / 128Mi request, 500m / 512Mi limit | same as dev | 200m / 256Mi request, 1 CPU / 1Gi limit |
-| Platform tests | automatically after each deploy | on demand | never |
-
 ---
-
 ## Design decisions
 
 1. **One cluster for all environments.** I set up this project in one EKS cluster because running three separate clusters, one per environment, would triple the cost, and I'm trying to keep the project cost-effective. Running all the environments in one cluster, separated by namespaces (`dev`, `staging` and `prod`), is much cheaper. To keep the environments from affecting each other, I gave each namespace its own resource quota, default resource limits, Pod Security rules and network policies. That way dev can't reach prod's pods or use up its CPU and memory.
@@ -162,6 +131,34 @@ All three environments run their chart in their own namespace on the same cluste
 9. **Infrastructure changes reviewed before they're applied.** I set up the pipeline so that every infrastructure change shows up as a Terraform plan on its pull request, so I can see exactly what will change before anything happens in AWS. The change is only applied when it's merged into `production`. I did it this way because the cluster is shared by all three environments, so a mistake there would affect all of them.
 
 10. **Four t3.medium nodes.** I used four t3.medium nodes because of how pod networking works on EKS. Every pod gets its own IP address from the VPC, which limits a t3.medium to 17 pods. The three environments need about 9 pods each, plus the platform add-ons, which comes to roughly 46 pods. Four nodes give room for 68 pods, which fits everything with space to scale, while still being cheaper than using bigger instances.
+---
+
+#### How the pipeline works
+
+There is **one EKS cluster** with **three namespaces**, `dev`, `staging` and `prod`, and the pipeline keeps the application and the cluster separate.
+
+**Application (Helm Deploy): deployed per branch, to one namespace only.** Each long-lived branch maps to one namespace: `develop` to `dev`, `staging` to `staging`, and `production` to `prod`. When you push a change under `application/` to one of those branches, the **Helm Deploy** workflow updates **only that branch's namespace**, and the other two environments are not touched. It signs in to AWS through GitHub OIDC using the GitHub environment linked to the branch (`develop`, `staging` or `production`), builds the image registry, image tags and passwords from that environment's secrets and variables, and runs `helm upgrade` with that environment's `values-<env>.yaml`. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that change `application/` only lint the chart; they don't deploy anything. To redeploy an environment, or ship new image tags without a code change, run **Actions → Helm Deploy → Run workflow** and pick the environment.
+
+**Cluster (Deploy Infrastructure): changes rarely, and only from `production`.** The VPC, the EKS cluster and the shared add-ons (Gateway, cert-manager, external-dns, metrics-server and the namespaces themselves) are built once and shared by all three environments. It runs when files under `infrastructure/` change: a pull request with such a change gets a `terraform plan` posted as a comment, and pushing or merging it into `production` runs `terraform apply` for networking, eks and platform, in that order.
+
+**Tests** After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it manually against `staging`.
+
+#### Differences between the environments
+
+All three environments run their chart in their own namespace on the same cluster, behind a Gateway API.
+
+| | dev | staging | prod |
+|---|---|---|---|
+| Namespace / GitHub environment | `dev` / `develop` | `staging` / `staging` | `prod` / `production` |
+| URL | `dev.microservice-shop.preciousdipe.name.ng` | `staging.microservice-shop.preciousdipe.name.ng` | `prod.microservice-shop.preciousdipe.name.ng` |
+| App deployed by | push of an `application/` change to `develop` | push of an `application/` change to `staging` | push of an `application/` change to `production` |
+| frontend replicas (HPA) | 2–4 | 2–4 | 2–6 |
+| product / order-service replicas (HPA) | 2–4 each, scale at 50% CPU | 2–4 each, scale at 50% CPU | 2–10 each, scale at 60% CPU |
+| product / order-service resources | 100m CPU / 128Mi request, 500m / 256Mi limit | same as dev | 200m CPU / 192Mi request, 1 CPU / 384Mi limit |
+| PostgreSQL | 512Mi volume, 250m CPU / 256Mi request | 2Gi volume, same CPU / memory as dev | 10Gi volume, 500m CPU / 512Mi request, 2 CPU / 1Gi limit |
+| Pod disruption budget | at least 1 pod per service | at least 1 pod per service | at least 2 pods per service |
+| Namespace quota (requests / limits) | 2 CPU · 4Gi / 8 CPU · 8Gi, 30 pods | 2 CPU · 4Gi / 8 CPU · 8Gi, 30 pods | 4 CPU · 8Gi / 16 CPU · 16Gi, 60 pods |
+| Default container size (no requests set) | 100m / 128Mi request, 500m / 512Mi limit | same as dev | 200m / 256Mi request, 1 CPU / 1Gi limit |
 
 ---
 
