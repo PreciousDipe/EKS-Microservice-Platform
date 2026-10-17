@@ -96,7 +96,7 @@ jobs:
           {
             echo "### Platform tests: \`$NS\`"
             echo
-            for f in results/0*.txt; do
+            for f in "docs/test-results/$NS"/0*.txt; do
               [ -f "$f" ] || continue
               echo "- **$(basename "$f" .txt)**: $(grep -h 'RESULT:' "$f" | tail -1 | sed 's/.*RESULT: //')"
             done
@@ -107,4 +107,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: platform-tests-${{ env.NS }}-${{ github.run_number }}
-          path: results/
+          path: docs/test-results/${{ env.NS }}/
