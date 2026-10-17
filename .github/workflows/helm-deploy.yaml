@@ -10,6 +10,10 @@ on:
       - "application/**"
       - ".github/workflows/helm-deploy.yaml"
   pull_request:
+    branches:
+      - "develop"
+      - "staging"
+      - "production"
     paths:
       - "application/**"
       - ".github/workflows/helm-deploy.yaml"
@@ -112,6 +116,16 @@ jobs:
     steps:
       - name: Checkout Codebase
         uses: actions/checkout@v4
+
+      - name: Check the AWS role secret
+        env:
+          ROLE_ARN: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Secret AWS_ROLE_TO_ASSUME is empty for this run. Add it under Settings > Secrets and variables > Actions > Secrets (repository secret), e.g. arn:aws:iam::<account-id>:role/github-actions-eks-platform"
+            exit 1
+          fi
+          echo "Assuming ${ROLE_ARN##*/}"
 
       - name: Authenticate to AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v6

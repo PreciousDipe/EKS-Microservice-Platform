@@ -12,14 +12,12 @@ A production-style Kubernetes platform on **Amazon EKS** (eu-north-1), built wit
 
 ![Architecture](images/architecture.png)
 
-The editable diagram is [images/architecture.drawio](images/architecture.drawio). Open it in [draw.io](https://app.diagrams.net) or the VS Code *Draw.io Integration* extension.
-
 **Request flow:**
 1. A client resolves `dev.microservice-shop.preciousdipe.name.ng` through Route 53.
-2. The client connects over HTTPS to the **single Network Load Balancer**, which spans both Availability Zones.
-3. The NLB forwards the request to the **shared Gateway** in the `gateway` namespace, which matches the hostname to the `dev` namespace's routes.
-4. The routes send `/` to the frontend, `/api/products` to product-service and `/api/orders` to order-service.
-5. The services use the namespace's own PostgreSQL (on an EBS volume) and Redis.
+2. The client connects over HTTPS to a **Network Load Balancer**, which spans both Availability Zones.
+3. The NLB forwards the request to the **Gateway API** in the `gateway` namespace, which matches the hostname to the `dev` namespace's routes.
+4. The routes the request to the frontend, `/api/products` to product-service and `/api/orders` to order-service.
+5. The services use each namespace's database PostgreSQL and Redis.
 
 ---
 
@@ -27,37 +25,29 @@ The editable diagram is [images/architecture.drawio](images/architecture.drawio)
 
 Run everything from **WSL / Linux** in the repo, as an AWS identity with admin rights in account `143977713038`.
 
-### 0. Prerequisites
-
-- Terraform ≥ 1.10, AWS CLI v2, kubectl, Helm 4 (`curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash`)
-- EC2 On-Demand vCPU quota ≥ 8 in eu-north-1 (4 × t3.medium):
-  ```bash
-  aws service-quotas get-service-quota --region eu-north-1 --service-code ec2 --quota-code L-1216C47A --query 'Quota.Value'
-  ```
-
+### 0. Setup Region
 ```bash
 cd infrastructure
 export AWS_REGION=eu-north-1
 ```
 
-### 1. State bucket (once per account)
+### 1. Setup S3 bucket 
 
 ```bash
-terraform init && terraform apply          # creates the S3 bucket eks-platform-project-tfstate
+terraform init && terraform apply          # 
 ```
 
-### 2. Pipeline role
+### 2. Setup Pipeline role
 
-Creates the GitHub OIDC provider and the IAM role `github-actions-eks-platform` that GitHub Actions assumes. Set `github_repository` in `script/shared/github-oidc-tfvars.sh` first.
-
+Creates the GitHub OIDC provider and the IAM role that GitHub Actions assumes. 
 ```bash
 bash script/tf-init.sh shared github-oidc
 terraform -chdir=environment/shared/github-oidc plan -out=tfplan
 terraform -chdir=environment/shared/github-oidc apply tfplan
-terraform -chdir=environment/shared/github-oidc output role_arn      # → GitHub secret AWS_ROLE_TO_ASSUME
+terraform -chdir=environment/shared/github-oidc output role_arn      
 ```
 
-### 3. Networking and DNS zone (~3 min)
+### 3. Setup Networking and DNS zone
 
 ```bash
 bash script/tf-init.sh shared networking
@@ -66,34 +56,30 @@ terraform -chdir=environment/shared/networking apply tfplan
 terraform -chdir=environment/shared/networking output dns_name_servers
 ```
 
-In the account that owns `preciousdipe.name.ng`, set the NS record **`microservice-shop`** to the four printed name servers, one per line with no commas. Check it with `dig +short NS microservice-shop.preciousdipe.name.ng`.
-
-### 4. EKS cluster (~15–20 min)
-
+### 4. Set the EKS cluster
 ```bash
 bash script/tf-init.sh shared eks
 terraform -chdir=environment/shared/eks plan -out=tfplan
 terraform -chdir=environment/shared/eks apply tfplan
 
 aws eks update-kubeconfig --region eu-north-1 --name eks-microservice-platform
-kubectl get nodes                                  # 4 nodes Ready
+kubectl get nodes                                  
 ```
 
-### 5. Platform services (~5 min)
+### 5. Setup Add-ons on EKS
 
 ```bash
-export TF_VAR_acme_email='<your-email>'            # Let's Encrypt notices
+export TF_VAR_acme_email='<your-email>'            
 bash script/tf-init.sh shared platform
 terraform -chdir=environment/shared/platform plan -out=tfplan
 terraform -chdir=environment/shared/platform apply tfplan
 
-kubectl get gatewayclass nginx                     # ACCEPTED True
-kubectl get clusterissuer letsencrypt              # READY True
-kubectl -n gateway get gateway,certificate         # shared Gateway PROGRAMMED, wildcard certificate READY
+kubectl get gatewayclass nginx                     
+kubectl get clusterissuer letsencrypt              
+kubectl -n gateway get gateway,certificate         
 ```
 
-### 6. Deploy the application
-
+### 6. Install the Application via Helm
 Repeat for `dev`, `staging` and `prod`, using a different user and password for each:
 
 ```bash
@@ -108,29 +94,22 @@ helm upgrade --install microservice-shop ./application --namespace $ENV \
   --set images.redis=redis:8.8.3-alpine \
   --set secrets.postgresUser='<db-user>' \
   --set secrets.postgresPassword='<db-password>' \
-  --set secrets.redisPassword='<redis-password>'      # letters, numbers, dashes
+  --set secrets.redisPassword='<redis-password>'     
 
-kubectl -n $ENV get pods,httproute               # routes Accepted by gateway/shared-gateway
+kubectl -n $ENV get pods,httproute
 ```
-
-### 7. Hand over to the pipeline
-
-Configure GitHub once (**Settings**):
-- **Environments:** `develop`, `staging`, `production`.
-- **Repository variables:** `ACME_EMAIL`, `IMAGE_REGISTRY`, `FRONTEND_IMAGE`, `POSTGRES_IMAGE`, `REDIS_IMAGE`.
-- **Environment variables:** `PRODUCT_SERVICE_TAG`, `ORDER_SERVICE_TAG`.
-- **Repository secret:** `AWS_ROLE_TO_ASSUME`.
-- **Environment secrets:** `POSTGRES_USER`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` (the same values as in step 6).
 
 #### How the pipeline works
 
-The pipeline deploys **per branch**. Each long-lived branch maps to one environment: `develop` deploys to the `dev` namespace, `staging` to the `staging` namespace, and `production` to the `prod` namespace. Changes move up by pull request, from `develop` to `staging` to `production`, so the same code is tested in each environment before it reaches the next one.
+There is **one EKS cluster** with **three namespaces**, `dev`, `staging` and `prod`, and the pipeline keeps the application and the cluster separate.
 
-When you merge into one of those branches and the change touches `application/`, the **Helm Deploy** workflow runs. It signs in to AWS through GitHub OIDC, using the GitHub environment linked to that branch: `develop`, `staging` or `production`. From that environment's secrets and variables it builds the values for the image registry, image tags and passwords. It then runs `helm upgrade` into the matching namespace. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that touch `application/` don't deploy anything; they only lint the chart against all three environments. To ship a new image version without a code change, run Helm Deploy manually and enter the new tags.
+**Application (Helm Deploy): deployed per branch, to one namespace only.** Each long-lived branch maps to one namespace: `develop` to `dev`, `staging` to `staging`, and `production` to `prod`. When you push a change under `application/` to one of those branches, the **Helm Deploy** workflow updates **only that branch's namespace**, and the other two environments are not touched. It signs in to AWS through GitHub OIDC using the GitHub environment linked to the branch (`develop`, `staging` or `production`), builds the image registry, image tags and passwords from that environment's secrets and variables, and runs `helm upgrade` with that environment's `values-<env>.yaml`. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that change `application/` only lint the chart; they don't deploy anything. To redeploy an environment, or ship new image tags without a code change, run **Actions → Helm Deploy → Run workflow** and pick the environment.
 
-Infrastructure follows the same pull-request flow, but only on `production`. That's because there is one shared cluster, and changing it affects every environment. A pull request into `production` that touches `infrastructure/` runs `terraform plan` for the networking, eks and platform layers and posts each plan as a comment on the pull request. Merging the pull request runs `terraform apply` in that order. The Terraform state lives in S3 with native locking, so two runs can never change the same layer at once.
+A typical change goes like this: push it to `develop` and check it in `dev`, then merge `develop` into `staging` and check it there, then merge `staging` into `production` to release it to `prod`.
 
-After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it by hand against `staging`. It never runs against `prod`, because the tests delete pods and generate load.
+**Cluster (Deploy Infrastructure): changes rarely, and only from `production`.** The VPC, the EKS cluster and the shared add-ons (Gateway, cert-manager, external-dns, metrics-server and the namespaces themselves) are built once and shared by all three environments. You don't need this workflow to deploy the application. It only runs when files under `infrastructure/` change: a pull request with such a change gets a `terraform plan` posted as a comment, and pushing or merging it into `production` runs `terraform apply` for networking, eks and platform, in that order. Only one branch applies because there is a single Terraform state, kept in S3 with native locking. If two branches both applied, they would keep overwriting each other's changes to the same cluster.
+
+**Tests (Platform Tests).** After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it by hand against `staging`. It never runs against `prod`, because the tests delete pods and generate load.
 
 #### Differences between the environments
 
@@ -141,7 +120,7 @@ All three environments run the same chart in their own namespace on the same clu
 | Git branch | `develop` | `staging` | `production` |
 | Namespace / GitHub environment | `dev` / `develop` | `staging` / `staging` | `prod` / `production` |
 | URL | `dev.microservice-shop.preciousdipe.name.ng` | `staging.microservice-shop.preciousdipe.name.ng` | `prod.microservice-shop.preciousdipe.name.ng` |
-| Deployed by | merge to `develop` | merge to `staging` | merge to `production` (which also applies the infrastructure) |
+| App deployed by | push of an `application/` change to `develop` | push of an `application/` change to `staging` | push of an `application/` change to `production` |
 | frontend replicas (HPA) | 2–4 | 2–4 | 2–6 |
 | product / order-service replicas (HPA) | 2–4 each, scale at 50% CPU | 2–4 each, scale at 50% CPU | 2–10 each, scale at 60% CPU |
 | product / order-service resources | 100m CPU / 128Mi request, 500m / 256Mi limit | same as dev | 200m CPU / 192Mi request, 1 CPU / 384Mi limit |
