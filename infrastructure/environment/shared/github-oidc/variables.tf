@@ -40,3 +40,13 @@ variable "create_oidc_provider" {
   type        = bool
   default     = true
 }
+
+variable "github_owner_id" {
+  description = "Numeric ID of the repository owner (GitHub API: .owner.id), used in the immutable-ID subject claim"
+  type        = number
+}
+
+variable "github_repository_id" {
+  description = "Numeric ID of the repository (GitHub API: .id), used in the immutable-ID subject claim"
+  type        = number
+}

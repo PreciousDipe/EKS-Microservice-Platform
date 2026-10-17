@@ -1,6 +1,6 @@
 # EKS Microservice Platform
 
-A production-style Kubernetes platform on **Amazon EKS** (eu-north-1), built with **Terraform** and deployed with **Helm** and **GitHub Actions**. One cluster hosts three environments, **dev**, **staging** and **prod**, each in its own namespace and each running the *microservice-shop* application (frontend, product-service, order-service, PostgreSQL, Redis).
+An Application hosted on **Amazon EKS** (eu-north-1), built with **Terraform** and deployed with **Helm** and **GitHub Actions**. The cluster hosts three environments, **dev**, **staging** and **prod**, each in its own namespace running a three tier *microservice-shop* application.
 
 | Environment | URL |
 |---|---|
@@ -10,52 +10,57 @@ A production-style Kubernetes platform on **Amazon EKS** (eu-north-1), built wit
 
 ## Architecture
 
-![Architecture](images/architecture.png)
+![Architecture](docs/architecture.png)
 
 **Request flow:**
-1. A client resolves `dev.microservice-shop.preciousdipe.name.ng` through Route 53.
-2. The client connects over HTTPS to a **Network Load Balancer**, which spans both Availability Zones.
-3. The NLB forwards the request to the **Gateway API** in the `gateway` namespace, which matches the hostname to the `dev` namespace's routes.
-4. The routes the request to the frontend, `/api/products` to product-service and `/api/orders` to order-service.
-5. The services use each namespace's database PostgreSQL and Redis.
+A client send request to the url `dev.microservice-shop.preciousdipe.name.ng` through Route 53. The request is sent over HTTPS to a **Network Load Balancer**, The NLB forwards the request to the **Gateway API** in the `gateway` namespace, which matches the hostname to the `dev` namespace's routes, which routes the request to the frontend, to product-service `/api/products` and to order-service `/api/orders`. The services use each namespace's database PostgreSQL and Redis.
+
+### Live environment
+
+The shop running in the `prod` namespace at https://prod.microservice-shop.preciousdipe.name.ng, served through the Gateway with a Let's Encrypt certificate:
+
+**▶ Video walkthrough:** [docs/Live-proof.mp4](docs/Live-proof.mp4)
+
+[![Watch the live walkthrough](docs/prod-frontend.png)](docs/Live-proof.mp4)
+
+**Frontend:** https://prod.microservice-shop.preciousdipe.name.ng
+
+![Prod frontend](docs/prod-frontend.png)
+
+**Product service:** https://prod.microservice-shop.preciousdipe.name.ng/api/products
+
+![Prod products API](docs/prod-products.png)
+
+**Order service:** https://prod.microservice-shop.preciousdipe.name.ng/api/orders
+
+![Prod orders API](docs/prod-orders.png)
 
 ---
 
 ## Step-by-step deployment
-
-Run everything from **WSL / Linux** in the repo, as an AWS identity with admin rights in account `143977713038`.
-
-### 0. Prerequisites
-
-- Terraform ≥ 1.10, AWS CLI v2, kubectl, Helm 4 (`curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash`)
-- EC2 On-Demand vCPU quota ≥ 8 in eu-north-1 (4 × t3.medium):
-  ```bash
-  aws service-quotas get-service-quota --region eu-north-1 --service-code ec2 --quota-code L-1216C47A --query 'Quota.Value'
-  ```
-
+### Setup Region
 ```bash
 cd infrastructure
 export AWS_REGION=eu-north-1
 ```
 
-### 1. State bucket (once per account)
+### Setup S3 bucket 
 
 ```bash
-terraform init && terraform apply          # creates the S3 bucket eks-platform-project-tfstate
+terraform init && terraform apply          # 
 ```
 
-### 2. Pipeline role
+### Setup Pipeline role
 
-Creates the GitHub OIDC provider and the IAM role `github-actions-eks-platform` that GitHub Actions assumes. Set `github_repository` in `script/shared/github-oidc-tfvars.sh` first.
-
+Creates the GitHub OIDC provider and the IAM role that GitHub Actions assumes. 
 ```bash
 bash script/tf-init.sh shared github-oidc
 terraform -chdir=environment/shared/github-oidc plan -out=tfplan
 terraform -chdir=environment/shared/github-oidc apply tfplan
-terraform -chdir=environment/shared/github-oidc output role_arn      # → GitHub secret AWS_ROLE_TO_ASSUME
+terraform -chdir=environment/shared/github-oidc output role_arn      
 ```
 
-### 3. Networking and DNS zone (~3 min)
+### Setup Networking and DNS zone
 
 ```bash
 bash script/tf-init.sh shared networking
@@ -64,34 +69,30 @@ terraform -chdir=environment/shared/networking apply tfplan
 terraform -chdir=environment/shared/networking output dns_name_servers
 ```
 
-In the account that owns `preciousdipe.name.ng`, set the NS record **`microservice-shop`** to the four printed name servers, one per line with no commas. Check it with `dig +short NS microservice-shop.preciousdipe.name.ng`.
-
-### 4. EKS cluster (~15–20 min)
-
+### Set the EKS cluster
 ```bash
 bash script/tf-init.sh shared eks
 terraform -chdir=environment/shared/eks plan -out=tfplan
 terraform -chdir=environment/shared/eks apply tfplan
 
 aws eks update-kubeconfig --region eu-north-1 --name eks-microservice-platform
-kubectl get nodes                                  # 4 nodes Ready
+kubectl get nodes                                  
 ```
 
-### 5. Platform services (~5 min)
+### Setup Add-ons on EKS
 
 ```bash
-export TF_VAR_acme_email='<your-email>'            # Let's Encrypt notices
+export TF_VAR_acme_email='<your-email>'            
 bash script/tf-init.sh shared platform
 terraform -chdir=environment/shared/platform plan -out=tfplan
 terraform -chdir=environment/shared/platform apply tfplan
 
-kubectl get gatewayclass nginx                     # ACCEPTED True
-kubectl get clusterissuer letsencrypt              # READY True
-kubectl -n gateway get gateway,certificate         # shared Gateway PROGRAMMED, wildcard certificate READY
+kubectl get gatewayclass nginx                     
+kubectl get clusterissuer letsencrypt              
+kubectl -n gateway get gateway,certificate         
 ```
 
-### 6. Deploy the application
-
+### Install the Application via Helm
 Repeat for `dev`, `staging` and `prod`, using a different user and password for each:
 
 ```bash
@@ -106,40 +107,31 @@ helm upgrade --install microservice-shop ./application --namespace $ENV \
   --set images.redis=redis:8.8.3-alpine \
   --set secrets.postgresUser='<db-user>' \
   --set secrets.postgresPassword='<db-password>' \
-  --set secrets.redisPassword='<redis-password>'      # letters, numbers, dashes
+  --set secrets.redisPassword='<redis-password>'     
 
-kubectl -n $ENV get pods,httproute               # routes Accepted by gateway/shared-gateway
+kubectl -n $ENV get pods,httproute
 ```
-
-### 7. Hand over to the pipeline
-
-Configure GitHub once (**Settings**):
-- **Environments:** `develop`, `staging`, `production`.
-- **Repository variables:** `ACME_EMAIL`, `IMAGE_REGISTRY`, `FRONTEND_IMAGE`, `POSTGRES_IMAGE`, `REDIS_IMAGE`.
-- **Environment variables:** `PRODUCT_SERVICE_TAG`, `ORDER_SERVICE_TAG`.
-- **Repository secret:** `AWS_ROLE_TO_ASSUME`.
-- **Environment secrets:** `POSTGRES_USER`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` (the same values as in step 6).
 
 #### How the pipeline works
 
-The pipeline deploys **per branch**. Each long-lived branch maps to one environment: `develop` deploys to the `dev` namespace, `staging` to the `staging` namespace, and `production` to the `prod` namespace. Changes move up by pull request, from `develop` to `staging` to `production`, so the same code is tested in each environment before it reaches the next one.
+There is **one EKS cluster** with **three namespaces**, `dev`, `staging` and `prod`, and the pipeline keeps the application and the cluster separate.
 
-When you merge into one of those branches and the change touches `application/`, the **Helm Deploy** workflow runs. It signs in to AWS through GitHub OIDC, using the GitHub environment linked to that branch: `develop`, `staging` or `production`. From that environment's secrets and variables it builds the values for the image registry, image tags and passwords. It then runs `helm upgrade` into the matching namespace. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that touch `application/` don't deploy anything; they only lint the chart against all three environments. To ship a new image version without a code change, run Helm Deploy manually and enter the new tags.
+**Application (Helm Deploy): deployed per branch, to one namespace only.** Each long-lived branch maps to one namespace: `develop` to `dev`, `staging` to `staging`, and `production` to `prod`. When you push a change under `application/` to one of those branches, the **Helm Deploy** workflow updates **only that branch's namespace**, and the other two environments are not touched. It signs in to AWS through GitHub OIDC using the GitHub environment linked to the branch (`develop`, `staging` or `production`), builds the image registry, image tags and passwords from that environment's secrets and variables, and runs `helm upgrade` with that environment's `values-<env>.yaml`. If the new release doesn't become healthy within 10 minutes, Helm rolls it back automatically. Pull requests that change `application/` only lint the chart; they don't deploy anything. To redeploy an environment, or ship new image tags without a code change, run **Actions → Helm Deploy → Run workflow** and pick the environment.
 
-Infrastructure follows the same pull-request flow, but only on `production`. That's because there is one shared cluster, and changing it affects every environment. A pull request into `production` that touches `infrastructure/` runs `terraform plan` for the networking, eks and platform layers and posts each plan as a comment on the pull request. Merging the pull request runs `terraform apply` in that order. The Terraform state lives in S3 with native locking, so two runs can never change the same layer at once.
+**Cluster (Deploy Infrastructure): changes rarely, and only from `production`.** The VPC, the EKS cluster and the shared add-ons (Gateway, cert-manager, external-dns, metrics-server and the namespaces themselves) are built once and shared by all three environments. It runs when files under `infrastructure/` change: a pull request with such a change gets a `terraform plan` posted as a comment, and pushing or merging it into `production` runs `terraform apply` for networking, eks and platform, in that order.
 
-After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it by hand against `staging`. It never runs against `prod`, because the tests delete pods and generate load.
+**Tests** After every successful deploy to `dev`, the **Platform Tests** workflow runs automatically against `dev`. It checks zero-downtime rollouts, self-healing, autoscaling and data persistence. You can also run it manually against `staging`.
 
 #### Differences between the environments
 
-All three environments run the same chart in their own namespace on the same cluster, behind the same shared Gateway. The differences come from `application/values-<env>.yaml` and the namespace quotas in `script/shared/platform-tfvars.sh`.
+All three environments run their chart in their own namespace on the same cluster, behind a Gateway API.
 
 | | dev | staging | prod |
 |---|---|---|---|
 | Git branch | `develop` | `staging` | `production` |
 | Namespace / GitHub environment | `dev` / `develop` | `staging` / `staging` | `prod` / `production` |
 | URL | `dev.microservice-shop.preciousdipe.name.ng` | `staging.microservice-shop.preciousdipe.name.ng` | `prod.microservice-shop.preciousdipe.name.ng` |
-| Deployed by | merge to `develop` | merge to `staging` | merge to `production` (which also applies the infrastructure) |
+| App deployed by | push of an `application/` change to `develop` | push of an `application/` change to `staging` | push of an `application/` change to `production` |
 | frontend replicas (HPA) | 2–4 | 2–4 | 2–6 |
 | product / order-service replicas (HPA) | 2–4 each, scale at 50% CPU | 2–4 each, scale at 50% CPU | 2–10 each, scale at 60% CPU |
 | product / order-service resources | 100m CPU / 128Mi request, 500m / 256Mi limit | same as dev | 200m CPU / 192Mi request, 1 CPU / 384Mi limit |
@@ -153,49 +145,45 @@ All three environments run the same chart in their own namespace on the same clu
 
 ## Design decisions
 
-| Decision | Why |
-|---|---|
-| **One EKS cluster, one namespace per environment** | A control plane, NAT gateway and node group cost the same whether they serve one environment or three. Namespaces keep the environments apart: each has a ResourceQuota, a LimitRange, Pod Security labels and NetworkPolicies, so dev can't reach prod's pods or starve its CPU. |
-| **Terraform in layers** (github-oidc → networking → eks → platform) | Each layer has its own state file in S3 and reads the layer below through remote state. A change to the platform add-ons can't touch the VPC, and plans stay small and readable. State uses S3 native locking, so no DynamoDB table is needed. |
-| **Private nodes, public load balancers** | Worker nodes have no public IPs and reach the internet only through the NAT gateway (image pulls, AWS APIs). Only the load balancer in the public subnets faces the internet. The VPC spans 2 Availability Zones, with a public and a private subnet in each, and 2 worker nodes per zone, so losing one zone leaves the cluster running. |
-| **One shared Gateway and load balancer for all environments** | A single NLB and Gateway (NGINX Gateway Fabric, Gateway API) in the `gateway` namespace serve every environment by hostname, with one wildcard certificate (`*.microservice-shop.preciousdipe.name.ng`). That saves two NLBs (about $35–40/month). Each environment still owns its own routes: an HTTPRoute in its namespace that only it can change. The Gateway only accepts routes from namespaces labelled as environments. Because the shared entry point is managed by Terraform (planned on every PR), not by app releases, an app deploy can't break another environment's traffic. |
-| **Let's Encrypt via DNS-01 + external-dns** | The subdomain `microservice-shop.preciousdipe.name.ng` is delegated to this account, so records are managed here without touching the parent domain. cert-manager proves ownership through Route 53 and renews certificates automatically; external-dns creates each environment's DNS record. |
-| **PostgreSQL and Redis inside the cluster** | Each environment gets its own database and cache with no extra AWS services or cost. PostgreSQL is a StatefulSet on an encrypted gp3 EBS volume, so data survives pod restarts (verified by the data-persistence test). Redis is a cache only (cache-aside, 60 s TTL), so it needs no volume. |
-| **HPA + PDB + pod anti-affinity + rolling updates** | The HPAs (fed by metrics-server) scale the services with CPU load. PodDisruptionBudgets and `maxUnavailable: 0` keep capacity during node maintenance and deployments. Anti-affinity spreads replicas across nodes. |
-| **No long-lived credentials** | GitHub Actions signs in with OIDC to a role that only this repository's `develop` / `staging` / `production` environments can assume. Add-ons (load balancer controller, EBS CSI, external-dns, cert-manager) get AWS access through EKS Pod Identity. Images, database users and passwords come from pipeline variables and secrets, never from the repo. |
-| **Plan on pull request, apply on merge** | Every infrastructure change is reviewed as a plan in the PR before it reaches AWS. The shared cluster only changes from `production`, because it hosts every environment. |
-| **4 × t3.medium** | The VPC CNI gives each pod a VPC IP, which caps a t3.medium at 17 pods. Three environments (about 9 pods each at minimum scale) plus the platform add-ons need about 46 pods; 4 nodes give 68. |
+1. **One cluster for all environments.** I set up this project in one EKS cluster because running three separate clusters, one per environment, would triple the cost, and I'm trying to keep the project cost-effective. Running all the environments in one cluster, separated by namespaces (`dev`, `staging` and `prod`), is much cheaper. To keep the environments from affecting each other, I gave each namespace its own resource quota, default resource limits, Pod Security rules and network policies. That way dev can't reach prod's pods or use up its CPU and memory.
+
+2. **Terraform split into layers.** I split the Terraform code into four layers (github-oidc, networking, eks and platform) instead of one big configuration. Each layer has its own state file in S3 and reads what it needs from the layer below. I did this so that a change to one part, like the cluster add-ons, can never accidentally touch another part, like the VPC, and so each plan stays small and easy to read. I used S3's native state locking so that two runs can't change the same layer at the same time, without needing a separate DynamoDB table.
+
+3. **Private nodes across two Availability Zones.** I put the worker nodes in private subnets so they have no public IP addresses and can't be reached directly from the internet. They only go out through the NAT gateway, to pull images and talk to AWS. The only thing exposed to the internet is the load balancer in the public subnets. I spread the VPC and the four nodes across two Availability Zones, two nodes in each, so that if one zone goes down, the cluster keeps running in the other.
+
+4. **One shared load balancer and Gateway.** I set up a single Network Load Balancer and one shared Gateway, instead of multiple load balancers routing to each environment separately. The Gateway looks at the hostname (`dev.`, `staging.` or `prod.microservice-shop.preciousdipe.name.ng`) and sends each request to the right namespace, using one wildcard certificate for all of them. This saves the cost of two load balancers, about $35–40 a month. Each environment still controls its own routes, and only environment namespaces are allowed to attach to the Gateway. Because the Gateway is managed by Terraform rather than by the app deployments, deploying the app to one environment can't break another environment's traffic.
+
+5. **Automatic HTTPS and DNS.** I wanted every environment on its own proper domain with a trusted HTTPS certificate, without managing any of it by hand. So I delegated the subdomain `microservice-shop.preciousdipe.name.ng` to this AWS account, which means I can manage its DNS records here without touching the main domain. I used cert-manager to get the certificate from Let's Encrypt and renew it automatically, and external-dns to create the DNS record for each environment as soon as it's deployed.
+
+6. **PostgreSQL and Redis inside the cluster.** I decided to run the database and cache inside the cluster instead of using managed services like RDS and ElastiCache, because the managed services would add a lot of extra cost for each environment. Each environment gets its own PostgreSQL and Redis. PostgreSQL runs as a StatefulSet on an encrypted EBS volume, so its data survives when the pod restarts; I verified this with the data-persistence test. Redis is only used as a cache, so losing its data doesn't matter, and it doesn't need a volume.
+
+7. **Scaling and staying available.** I wanted the application to handle more traffic on its own and stay up during deployments and maintenance. I added autoscalers (HPAs) so the services add or remove pods based on CPU usage. I added disruption budgets so node maintenance can't take down too many pods at once. I set rolling updates to always start new pods before removing old ones, so there's no downtime during a deployment. I also spread each service's pods across different nodes, so one node failing doesn't take a whole service down.
+
+8. **No stored passwords or access keys.** I didn't want any long-lived AWS keys sitting in GitHub or in the cluster, because those can leak. So the pipeline signs in to AWS with OIDC, which gives it short-lived credentials, and only this repository's `develop`, `staging` and `production` environments are allowed to use that role. Inside the cluster, the add-ons get their AWS access through EKS Pod Identity instead of keys. I also kept image names, database users and passwords out of the code; they come from the pipeline's variables and secrets.
+
+9. **Infrastructure changes reviewed before they're applied.** I set up the pipeline so that every infrastructure change shows up as a Terraform plan on its pull request, so I can see exactly what will change before anything happens in AWS. The change is only applied when it's merged into `production`. I did it this way because the cluster is shared by all three environments, so a mistake there would affect all of them.
+
+10. **Four t3.medium nodes.** I used four t3.medium nodes because of how pod networking works on EKS. Every pod gets its own IP address from the VPC, which limits a t3.medium to 17 pods. The three environments need about 9 pods each, plus the platform add-ons, which comes to roughly 46 pods. Four nodes give room for 68 pods, which fits everything with space to scale, while still being cheaper than using bigger instances.
 
 ---
 
 ## Tests
 
-The `tests/` folder proves the platform's behaviour on a live environment. Each script writes its log to `results/` and ends with `RESULT: PASS` or `RESULT: FAIL`.
+[![Platform tests: passed on dev](https://img.shields.io/badge/platform%20tests%20(dev)-passed-brightgreen?logo=githubactions&logoColor=white)](https://github.com/PreciousDipe/EKS-Microservice-Platform/actions/runs/39041206889/attempts/1#summary-117420905598)
+[![Platform Tests workflow](https://github.com/PreciousDipe/EKS-Microservice-Platform/actions/workflows/platform-tests.yaml/badge.svg)](https://github.com/PreciousDipe/EKS-Microservice-Platform/actions/workflows/platform-tests.yaml)
 
-| Test | What it proves |
-|---|---|
-| `zero-downtime.sh` | A rolling update of product-service under 50 req/s of k6 load produces **no 5xx or failed requests**. |
-| `self-healing.sh` | Deleted frontend and product-service pods are replaced automatically, and the app keeps answering. |
-| `autoscaling.sh` | k6 ramps to 200 req/s, and the **HPA scales product-service** out (and back in). |
-| `data-persistence.sh` | An order survives deleting the PostgreSQL pod: new pod, **same PVC, same data**. |
+**[▶ View the test run and its results on GitHub Actions](https://github.com/PreciousDipe/EKS-Microservice-Platform/actions/runs/39041206889/attempts/1#summary-117420905598)**: the run against `dev` passed. The run summary shows PASS/FAIL per test, and the full logs are attached as a downloadable artifact.
 
-**From the pipeline:** **Actions → Platform Tests → Run workflow**, then pick `dev` or `staging` and a test, or `all`. It also runs automatically against dev after every successful dev deploy. Results appear in the run summary and as a downloadable artifact. Prod is excluded on purpose, because the tests delete pods and generate load.
-
-**From the CLI** (needs kubectl access and Docker for k6):
-
-```bash
-NS=dev bash tests/self-healing.sh
-NS=staging bash tests/zero-downtime.sh
-```
+The test is used to analyse the behaviour of the deployed services on the cluster in different cases.
 
 ---
 
 ## Cleanup
 
-Delete in reverse order. Remove the apps first so their DNS records are cleaned up. The platform destroy removes the shared Gateway and its load balancer while the controllers are still running.
+Delete all the configurations, starting from apps first so their DNS records are cleaned up. Terraform removes the Gateway and its load balancer while the controllers are still running.
 
 ```bash
-# 1. Applications (DNS records go with them), then the PostgreSQL volumes
+# 1. Applications
 for ns in dev staging prod; do
   helm uninstall microservice-shop -n $ns
   kubectl -n $ns delete pvc -l app.kubernetes.io/name=postgres
@@ -213,7 +201,3 @@ aws eks list-clusters --region eu-north-1
 aws elbv2 describe-load-balancers --region eu-north-1 --query 'LoadBalancers[].LoadBalancerName'
 aws ec2 describe-nat-gateways --region eu-north-1 --filter Name=state,Values=available --query 'NatGateways[].NatGatewayId'
 ```
-
-- **Parent domain:** remove the `microservice-shop` NS record in the account that owns `preciousdipe.name.ng`.
-- **State bucket:** it has `prevent_destroy`. To delete it too, empty all object versions, then run `aws s3api delete-bucket --bucket eks-platform-project-tfstate`.
-- **KMS key:** the cluster's key stays in "pending deletion" for 7 days. This is expected.

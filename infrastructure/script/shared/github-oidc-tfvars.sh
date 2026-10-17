@@ -7,6 +7,8 @@ region      = "eu-north-1"
 environment = "shared"
 
 github_repository    = "PreciousDipe/EKS-Microservice-Platform"
+github_owner_id      = 45766007
+github_repository_id = 1419812703
 github_environments  = ["develop", "staging", "production"]
 role_name            = "github-actions-eks-platform"
 create_oidc_provider = true

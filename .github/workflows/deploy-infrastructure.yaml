@@ -6,8 +6,8 @@ on:
       - production
     paths:
       - "infrastructure/**"
-      - ".github/workflows/terraform*.yaml"
       - ".github/workflows/deploy-infrastructure.yaml"
+      - ".github/workflows/terraform.yaml"
   workflow_dispatch:
     inputs:
       action:
@@ -36,7 +36,7 @@ jobs:
       layer: networking
       env_key: shared
       github_environment: production
-      apply: ${{ github.event_name == 'push' || inputs.action == 'apply' }}
+      apply: ${{ github.ref_name == 'production' && (github.event_name == 'push' || inputs.action == 'apply') }}
 
   eks:
     needs: networking
@@ -46,7 +46,7 @@ jobs:
       layer: eks
       env_key: shared
       github_environment: production
-      apply: ${{ github.event_name == 'push' || inputs.action == 'apply' }}
+      apply: ${{ github.ref_name == 'production' && (github.event_name == 'push' || inputs.action == 'apply') }}
 
   platform:
     needs: eks
@@ -56,4 +56,4 @@ jobs:
       layer: platform
       env_key: shared
       github_environment: production
-      apply: ${{ github.event_name == 'push' || inputs.action == 'apply' }}
+      apply: ${{ github.ref_name == 'production' && (github.event_name == 'push' || inputs.action == 'apply') }}

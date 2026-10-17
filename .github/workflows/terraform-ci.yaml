@@ -1,13 +1,16 @@
 name: "Terraform Plan (pull request)"
 
+# Plans on every PR into an environment branch; applying happens only from production (shared cluster)
 on:
   pull_request:
     branches:
+      - "develop"
+      - "staging"
       - "production"
     paths:
       - "infrastructure/**"
-      - ".github/workflows/terraform*.yaml"
-      - ".github/workflows/deploy-infrastructure.yaml"
+      - ".github/workflows/terraform-ci.yaml"
+      - ".github/workflows/terraform.yaml"
 
 permissions:
   id-token: write
@@ -30,5 +33,5 @@ jobs:
     with:
       layer: ${{ matrix.layer }}
       env_key: shared
-      github_environment: production
+      github_environment: ${{ github.base_ref }}
       apply: false
