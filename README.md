@@ -12,14 +12,12 @@ A production-style Kubernetes platform on **Amazon EKS** (eu-north-1), built wit
 
 ![Architecture](images/architecture.png)
 
-The editable diagram is [images/architecture.drawio](images/architecture.drawio). Open it in [draw.io](https://app.diagrams.net) or the VS Code *Draw.io Integration* extension.
-
 **Request flow:**
 1. A client resolves `dev.microservice-shop.preciousdipe.name.ng` through Route 53.
-2. The client connects over HTTPS to the **single Network Load Balancer**, which spans both Availability Zones.
-3. The NLB forwards the request to the **shared Gateway** in the `gateway` namespace, which matches the hostname to the `dev` namespace's routes.
-4. The routes send `/` to the frontend, `/api/products` to product-service and `/api/orders` to order-service.
-5. The services use the namespace's own PostgreSQL (on an EBS volume) and Redis.
+2. The client connects over HTTPS to a **Network Load Balancer**, which spans both Availability Zones.
+3. The NLB forwards the request to the **Gateway API** in the `gateway` namespace, which matches the hostname to the `dev` namespace's routes.
+4. The routes the request to the frontend, `/api/products` to product-service and `/api/orders` to order-service.
+5. The services use each namespace's database PostgreSQL and Redis.
 
 ---
 
