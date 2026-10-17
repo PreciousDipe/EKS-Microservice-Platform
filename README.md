@@ -25,37 +25,29 @@ A production-style Kubernetes platform on **Amazon EKS** (eu-north-1), built wit
 
 Run everything from **WSL / Linux** in the repo, as an AWS identity with admin rights in account `143977713038`.
 
-### 0. Prerequisites
-
-- Terraform ≥ 1.10, AWS CLI v2, kubectl, Helm 4 (`curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash`)
-- EC2 On-Demand vCPU quota ≥ 8 in eu-north-1 (4 × t3.medium):
-  ```bash
-  aws service-quotas get-service-quota --region eu-north-1 --service-code ec2 --quota-code L-1216C47A --query 'Quota.Value'
-  ```
-
+### 0. Setup Region
 ```bash
 cd infrastructure
 export AWS_REGION=eu-north-1
 ```
 
-### 1. State bucket (once per account)
+### 1. Setup S3 bucket 
 
 ```bash
-terraform init && terraform apply          # creates the S3 bucket eks-platform-project-tfstate
+terraform init && terraform apply          # 
 ```
 
-### 2. Pipeline role
+### 2. Setup Pipeline role
 
-Creates the GitHub OIDC provider and the IAM role `github-actions-eks-platform` that GitHub Actions assumes. Set `github_repository` in `script/shared/github-oidc-tfvars.sh` first.
-
+Creates the GitHub OIDC provider and the IAM role that GitHub Actions assumes. 
 ```bash
 bash script/tf-init.sh shared github-oidc
 terraform -chdir=environment/shared/github-oidc plan -out=tfplan
 terraform -chdir=environment/shared/github-oidc apply tfplan
-terraform -chdir=environment/shared/github-oidc output role_arn      # → GitHub secret AWS_ROLE_TO_ASSUME
+terraform -chdir=environment/shared/github-oidc output role_arn      
 ```
 
-### 3. Networking and DNS zone (~3 min)
+### 3. Setup Networking and DNS zone
 
 ```bash
 bash script/tf-init.sh shared networking
@@ -64,34 +56,30 @@ terraform -chdir=environment/shared/networking apply tfplan
 terraform -chdir=environment/shared/networking output dns_name_servers
 ```
 
-In the account that owns `preciousdipe.name.ng`, set the NS record **`microservice-shop`** to the four printed name servers, one per line with no commas. Check it with `dig +short NS microservice-shop.preciousdipe.name.ng`.
-
-### 4. EKS cluster (~15–20 min)
-
+### 4. Set the EKS cluster
 ```bash
 bash script/tf-init.sh shared eks
 terraform -chdir=environment/shared/eks plan -out=tfplan
 terraform -chdir=environment/shared/eks apply tfplan
 
 aws eks update-kubeconfig --region eu-north-1 --name eks-microservice-platform
-kubectl get nodes                                  # 4 nodes Ready
+kubectl get nodes                                  
 ```
 
-### 5. Platform services (~5 min)
+### 5. Setup Add-ons on EKS
 
 ```bash
-export TF_VAR_acme_email='<your-email>'            # Let's Encrypt notices
+export TF_VAR_acme_email='<your-email>'            
 bash script/tf-init.sh shared platform
 terraform -chdir=environment/shared/platform plan -out=tfplan
 terraform -chdir=environment/shared/platform apply tfplan
 
-kubectl get gatewayclass nginx                     # ACCEPTED True
-kubectl get clusterissuer letsencrypt              # READY True
-kubectl -n gateway get gateway,certificate         # shared Gateway PROGRAMMED, wildcard certificate READY
+kubectl get gatewayclass nginx                     
+kubectl get clusterissuer letsencrypt              
+kubectl -n gateway get gateway,certificate         
 ```
 
-### 6. Deploy the application
-
+### 6. Install the Application via Helm
 Repeat for `dev`, `staging` and `prod`, using a different user and password for each:
 
 ```bash
@@ -106,19 +94,10 @@ helm upgrade --install microservice-shop ./application --namespace $ENV \
   --set images.redis=redis:8.8.3-alpine \
   --set secrets.postgresUser='<db-user>' \
   --set secrets.postgresPassword='<db-password>' \
-  --set secrets.redisPassword='<redis-password>'      # letters, numbers, dashes
+  --set secrets.redisPassword='<redis-password>'     
 
-kubectl -n $ENV get pods,httproute               # routes Accepted by gateway/shared-gateway
+kubectl -n $ENV get pods,httproute
 ```
-
-### 7. Hand over to the pipeline
-
-Configure GitHub once (**Settings**):
-- **Environments:** `develop`, `staging`, `production`.
-- **Repository variables:** `ACME_EMAIL`, `IMAGE_REGISTRY`, `FRONTEND_IMAGE`, `POSTGRES_IMAGE`, `REDIS_IMAGE`.
-- **Environment variables:** `PRODUCT_SERVICE_TAG`, `ORDER_SERVICE_TAG`.
-- **Repository secret:** `AWS_ROLE_TO_ASSUME`.
-- **Environment secrets:** `POSTGRES_USER`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` (the same values as in step 6).
 
 #### How the pipeline works
 
