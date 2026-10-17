@@ -190,9 +190,4 @@ terraform -chdir=environment/shared/platform destroy
 terraform -chdir=environment/shared/eks destroy
 terraform -chdir=environment/shared/networking destroy
 terraform -chdir=environment/shared/github-oidc destroy
-
-# 3. Check nothing billable is left
-aws eks list-clusters --region eu-north-1
-aws elbv2 describe-load-balancers --region eu-north-1 --query 'LoadBalancers[].LoadBalancerName'
-aws ec2 describe-nat-gateways --region eu-north-1 --filter Name=state,Values=available --query 'NatGateways[].NatGatewayId'
 ```
