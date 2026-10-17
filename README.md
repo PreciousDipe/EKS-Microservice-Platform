@@ -19,9 +19,7 @@ A client send request to the url `dev.microservice-shop.preciousdipe.name.ng` th
 
 The shop running in the `prod` namespace at https://prod.microservice-shop.preciousdipe.name.ng, served through the Gateway with a Let's Encrypt certificate:
 
-**▶ Video walkthrough:** [docs/Live-proof.mp4](docs/Live-proof.mp4)
-
-[![Watch the live walkthrough](docs/prod-frontend.png)](docs/Live-proof.mp4)
+https://github.com/user-attachments/assets/38a7fa57-df91-4f9e-b9e0-30c155fb8c0c
 
 **Frontend:** https://prod.microservice-shop.preciousdipe.name.ng
 
