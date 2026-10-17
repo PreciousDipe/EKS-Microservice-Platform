@@ -1,0 +1,186 @@
+name: "Helm Deploy"
+
+on:
+  push:
+    branches:
+      - "develop"
+      - "staging"
+      - "production"
+    paths:
+      - "application/**"
+      - ".github/workflows/helm-deploy.yaml"
+  pull_request:
+    paths:
+      - "application/**"
+      - ".github/workflows/helm-deploy.yaml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Namespace to deploy to"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      product_service_tag:
+        description: "product-service image tag (empty = PRODUCT_SERVICE_TAG variable)"
+        required: false
+        type: string
+      order_service_tag:
+        description: "order-service image tag (empty = ORDER_SERVICE_TAG variable)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: helm-deploy-${{ github.ref_name }}-${{ inputs.environment || 'branch' }}
+  cancel-in-progress: false
+
+env:
+  HELM_VERSION: "v4.3.0"
+  AWS_REGION: "eu-north-1"
+  CLUSTER_NAME: "eks-microservice-platform"
+  CHART: "application"
+  RELEASE: "microservice-shop"
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      namespace: ${{ steps.resolve.outputs.namespace }}
+      github_environment: ${{ steps.resolve.outputs.github_environment }}
+    steps:
+      - id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_ENV: ${{ inputs.environment }}
+        run: |
+          case "$EVENT_NAME" in
+            workflow_dispatch) namespace="$INPUT_ENV" ;;
+            push)
+              case "$REF_NAME" in
+                develop)    namespace=dev ;;
+                staging)    namespace=staging ;;
+                production) namespace=prod ;;
+                *) echo "::error::No environment mapped to branch $REF_NAME"; exit 1 ;;
+              esac ;;
+            *) namespace="" ;;
+          esac
+
+          case "$namespace" in
+            dev)     github_environment=develop ;;
+            staging) github_environment=staging ;;
+            prod)    github_environment=production ;;
+            *)       github_environment="" ;;
+          esac
+
+          echo "namespace=$namespace" >> "$GITHUB_OUTPUT"
+          echo "github_environment=$github_environment" >> "$GITHUB_OUTPUT"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Lint the chart for every environment
+        run: |
+          for ns in dev staging prod; do
+            helm lint "$CHART" --strict --namespace "$ns" -f "$CHART/values-$ns.yaml" \
+              --set images.registry=lint.local --set images.productService.tag=lint --set images.orderService.tag=lint \
+              --set images.frontend=lint --set images.postgres=lint --set images.redis=lint \
+              --set secrets.postgresUser=lint --set secrets.postgresPassword=lint --set secrets.redisPassword=lint
+          done
+
+  deploy:
+    needs: [resolve, lint]
+    if: needs.resolve.outputs.namespace != ''
+    name: "deploy -> ${{ needs.resolve.outputs.namespace }}"
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.github_environment }}
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Connect to the cluster
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+
+      - name: Helm upgrade --install
+        env:
+          NAMESPACE: ${{ needs.resolve.outputs.namespace }}
+          IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY }}
+          PRODUCT_SERVICE_TAG: ${{ inputs.product_service_tag || vars.PRODUCT_SERVICE_TAG }}
+          ORDER_SERVICE_TAG: ${{ inputs.order_service_tag || vars.ORDER_SERVICE_TAG }}
+          FRONTEND_IMAGE: ${{ vars.FRONTEND_IMAGE }}
+          POSTGRES_IMAGE: ${{ vars.POSTGRES_IMAGE }}
+          REDIS_IMAGE: ${{ vars.REDIS_IMAGE }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+        run: |
+          for v in IMAGE_REGISTRY PRODUCT_SERVICE_TAG ORDER_SERVICE_TAG FRONTEND_IMAGE POSTGRES_IMAGE REDIS_IMAGE \
+                   POSTGRES_USER POSTGRES_PASSWORD REDIS_PASSWORD; do
+            [ -n "${!v}" ] || { echo "::error::$v is not set for this GitHub environment"; exit 1; }
+          done
+
+          values_file="$RUNNER_TEMP/pipeline-values.json"
+          jq -n \
+            --arg registry "$IMAGE_REGISTRY" \
+            --arg product "$PRODUCT_SERVICE_TAG" \
+            --arg order "$ORDER_SERVICE_TAG" \
+            --arg frontend "$FRONTEND_IMAGE" \
+            --arg postgres "$POSTGRES_IMAGE" \
+            --arg redisImage "$REDIS_IMAGE" \
+            --arg pgUser "$POSTGRES_USER" \
+            --arg pg "$POSTGRES_PASSWORD" \
+            --arg redis "$REDIS_PASSWORD" \
+            '{
+              images: {
+                registry: $registry,
+                productService: {tag: $product},
+                orderService: {tag: $order},
+                frontend: $frontend,
+                postgres: $postgres,
+                redis: $redisImage
+              },
+              secrets: {postgresUser: $pgUser, postgresPassword: $pg, redisPassword: $redis}
+            }' > "$values_file"
+
+          helm upgrade --install "$RELEASE" "$CHART" \
+            --namespace "$NAMESPACE" \
+            -f "$CHART/values-$NAMESPACE.yaml" \
+            -f "$values_file" \
+            --wait --rollback-on-failure --timeout 10m \
+            --history-max 10
+
+          rm -f "$values_file"
+
+      - name: Release status
+        if: always()
+        env:
+          NAMESPACE: ${{ needs.resolve.outputs.namespace }}
+        run: |
+          helm status "$RELEASE" --namespace "$NAMESPACE" || true
+          kubectl -n "$NAMESPACE" get pods,svc,gateway,httproute,hpa || true

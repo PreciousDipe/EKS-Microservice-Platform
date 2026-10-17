@@ -1,0 +1,120 @@
+name: "Terraform Layer Worker"
+
+on:
+  workflow_call:
+    inputs:
+      layer:
+        description: "networking | eks | platform"
+        required: true
+        type: string
+      apply:
+        description: "Run terraform apply after a successful plan"
+        required: false
+        type: boolean
+        default: false
+      env_key:
+        description: "Folder under infrastructure/environment (shared)"
+        required: true
+        type: string
+      github_environment:
+        description: "GitHub Environment name (must match IAM trust policy)"
+        required: true
+        type: string
+      runner:
+        description: "runs-on label"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.13.5"
+  TF_IN_AUTOMATION: "true"
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+  AWS_REGION: "eu-north-1"
+
+  TF_VAR_acme_email: ${{ vars.ACME_EMAIL }}
+
+jobs:
+  terraform:
+    name: "${{ inputs.env_key }}/${{ inputs.layer }}${{ inputs.apply && ' apply' || ' plan' }}"
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.github_environment }}
+    defaults:
+      run:
+        working-directory: "infrastructure/environment/${{ inputs.env_key }}/${{ inputs.layer }}"
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform Binary
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: ${{ github.workspace }}
+        run: bash infrastructure/script/tf-init.sh ${{ inputs.env_key }} ${{ inputs.layer }}
+
+      - name: Terraform Format Check
+        working-directory: ${{ github.workspace }}
+        run: terraform fmt -check -recursive -diff infrastructure
+        continue-on-error: true
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -input=false -lock-timeout=5m -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+          {
+            echo "### ${{ inputs.env_key }}/${{ inputs.layer }} plan"
+            echo '```'
+            grep -E '^(Plan:|No changes)' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build plan comment
+        if: github.event_name == 'pull_request'
+        env:
+          TARGET: ${{ inputs.env_key }}/${{ inputs.layer }}
+        run: |
+          summary=$(grep -E '^(Plan:|No changes)' plan.txt || echo "See the job log")
+
+          {
+            echo "### Terraform plan: \`$TARGET\`"
+            echo "**$summary**"
+            echo
+            echo "<details><summary>Show plan</summary>"
+            echo
+            echo '```hcl'
+            head -c 60000 plan.txt
+            echo
+            echo '```'
+            echo "</details>"
+          } > plan-comment.md
+
+      - name: Comment plan on pull request
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: terraform-plan-${{ inputs.env_key }}-${{ inputs.layer }}
+          path: infrastructure/environment/${{ inputs.env_key }}/${{ inputs.layer }}/plan-comment.md
+
+      - name: Terraform Apply
+        if: ${{ inputs.apply }}
+        run: terraform apply -input=false -lock-timeout=5m tfplan

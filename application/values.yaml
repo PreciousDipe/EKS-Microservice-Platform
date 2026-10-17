@@ -1,0 +1,123 @@
+images:
+  pullPolicy: IfNotPresent
+  # all image values are set by the pipeline
+  registry: ""
+  productService:
+    repository: product-service
+    tag: ""
+  orderService:
+    repository: order-service
+    tag: ""
+  frontend: ""
+  postgres: ""
+  redis: ""
+
+secrets:
+  create: true
+  name: apps-secret
+  postgresUser: ""           # required: passed at install time, never committed
+  postgresPassword: ""       # required: passed at install time, never committed
+  redisPassword: ""          # required: letters, numbers, dashes (used in a URL)
+
+# ---
+frontend:
+  port: 8080
+  hpa:
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPU: 50
+  resources:
+    requests:
+      cpu: 10m
+      memory: 8Mi
+    limits:
+      cpu: 100m
+      memory: 32Mi
+
+# ---
+backend:
+  port: 3000
+  nodeEnv: production
+  cacheTtlSeconds: 60
+  productService:
+    hpa:
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPU: 50
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  orderService:
+    hpa:
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPU: 50
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  migrate:                   
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 64Mi
+
+
+hpaBehavior:
+  scaleUpPods: 2
+  scaleUpPeriodSeconds: 15
+  scaleDownStabilizationSeconds: 60
+  scaleDownPods: 1
+  scaleDownPeriodSeconds: 30
+
+# ---
+database:
+  name: app
+  pgdata: /var/lib/postgresql/data/pgdata
+  storage: 1Gi
+  storageClassName: ""      
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# ---
+cache:
+  maxmemory: 100mb
+  maxmemoryPolicy: allkeys-lru
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 192Mi
+
+# ---
+pdb:
+  minAvailable: 1
+
+# ---
+networkPolicy:
+  enabled: true
+
+# ---
+# Shared Gateway (one NLB + wildcard certificate) created by the Terraform platform layer
+gateway:
+  name: shared-gateway
+  namespace: gateway
+  # hostname = <namespace>.<domain>, e.g. dev.microservice-shop.preciousdipe.name.ng
+  domain: microservice-shop.preciousdipe.name.ng

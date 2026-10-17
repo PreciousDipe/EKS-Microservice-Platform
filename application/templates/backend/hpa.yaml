@@ -1,0 +1,29 @@
+{{- $services := list
+  (dict "name" "product-service" "hpa" .Values.backend.productService.hpa)
+  (dict "name" "order-service" "hpa" .Values.backend.orderService.hpa) }}
+{{- range $svc := $services }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $svc.name }}-hpa
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "shop.componentLabels" (dict "name" $svc.name "partOf" "app" "tier" "backend" "ctx" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $svc.name }}
+  minReplicas: {{ $svc.hpa.minReplicas }}
+  maxReplicas: {{ $svc.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $svc.hpa.targetCPU }}
+  behavior:
+    {{- include "shop.hpaBehavior" $ | nindent 4 }}
+{{- end }}

@@ -1,0 +1,18 @@
+{{- range $name := list "product-service" "order-service" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-svc
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "shop.componentLabels" (dict "name" $name "partOf" "app" "tier" "backend" "ctx" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: {{ $.Values.backend.port }}
+      targetPort: http
+{{- end }}

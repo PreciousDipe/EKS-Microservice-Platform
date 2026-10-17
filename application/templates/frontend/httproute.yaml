@@ -1,0 +1,73 @@
+{{- $ns := .Release.Namespace }}
+# http listener: send every request to https.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-httproute-tls-redirect
+  namespace: {{ $ns }}
+  labels:
+    component: gateway-route
+    {{- include "shop.componentLabels" (dict "name" "frontend" "partOf" "app" "tier" "frontend" "ctx" $) | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.name }}
+      namespace: {{ .Values.gateway.namespace }}
+      sectionName: http
+  hostnames:
+    - {{ include "shop.gatewayHost" . }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+---
+# https listener: /api/products and /api/orders to the backends, everything else to the frontend.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-httproute
+  namespace: {{ $ns }}
+  labels:
+    component: gateway-route
+    {{- include "shop.componentLabels" (dict "name" "frontend" "partOf" "app" "tier" "frontend" "ctx" $) | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.name }}
+      namespace: {{ .Values.gateway.namespace }}
+      sectionName: https
+  hostnames:
+    - {{ include "shop.gatewayHost" . }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/products
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /products
+      backendRefs:
+        - name: product-service-svc
+          port: {{ .Values.backend.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/orders
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /orders
+      backendRefs:
+        - name: order-service-svc
+          port: {{ .Values.backend.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend-svc
+          port: {{ .Values.frontend.port }}

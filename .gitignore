@@ -1,0 +1,32 @@
+# ==============================================================================
+# Terraform Runtime & Binary Files (Do NOT commit to git)
+# ==============================================================================
+# Blocks hidden .terraform folders generated during 'terraform init'
+**/.terraform/
+
+# ==============================================================================
+# State Records & Dynamic Backups (State should live exclusively in S3!)
+# ==============================================================================
+# Blocks local state files if you accidentally run local commands without an S3 backend
+*.tfstate
+*.tfstate.*
+**/*.tfstate
+**/*.tfstate.*
+
+# Blocks state locking runtime files
+.terraform.tfstate.lock.info*
+
+# ==============================================================================
+# Generated Secret & Variable Mappings
+# ==============================================================================
+# Blocks generated variable override maps (The output of your script/ generation)
+*.tfvars
+*.tfvars.json
+**/*.tfvars
+**/*.tfvars.json
+
+# Blocks any plan output bundles created via 'terraform plan -out=tfplan'
+*tfplan*
+plan.out
+**/*tfplan*
+**/plan.out

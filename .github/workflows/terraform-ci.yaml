@@ -1,0 +1,33 @@
+name: "Terraform Plan (pull request)"
+
+on:
+  pull_request:
+    branches:
+      - "production"
+    paths:
+      - "infrastructure/**"
+      - ".github/workflows/terraform*.yaml"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: terraform-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        layer: [networking, eks, platform]
+    uses: ./.github/workflows/terraform.yaml
+    secrets: inherit
+    with:
+      layer: ${{ matrix.layer }}
+      env_key: shared
+      github_environment: production
+      apply: false

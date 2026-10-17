@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "shop.componentLabels" (dict "name" "frontend" "partOf" "app" "tier" "frontend" "ctx" $) | nindent 4 }}
+spec:
+  # No "replicas": the HPA owns the pod count.
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  strategy:
+    {{- include "shop.rollingUpdate" . | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shop.componentLabels" (dict "name" "frontend" "partOf" "app" "tier" "frontend" "ctx" $) | nindent 8 }}
+      annotations:
+        # A new page or port rolls the pods on "helm upgrade".
+        checksum/config: {{ include (print $.Template.BasePath "/frontend/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "shop.podSecurity" (dict "uid" 65534 "gid" 65534) | nindent 8 }}
+      affinity:
+        {{- include "shop.antiAffinity" "frontend" | nindent 8 }}
+      containers:
+        - name: frontend-app-container
+          image: {{ required "images.frontend is required (set by the pipeline)" .Values.images.frontend }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            - name: FRONTEND_APP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: frontend-app-config
+                  key: FRONTEND_APP_PORT
+          command:
+            - httpd
+            - -f
+            - -v
+            - -p
+            - $(FRONTEND_APP_PORT)
+            - -h
+            - /www
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.port }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          # Keep serving while the pod is removed from the Service, then stop.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sleep
+                  - "5"
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          securityContext:
+            {{- include "shop.containerSecurity" true | nindent 12 }}
+          volumeMounts:
+            - name: frontend-page
+              mountPath: /www
+              readOnly: true
+      volumes:
+        - name: frontend-page
+          configMap:
+            name: frontend-page

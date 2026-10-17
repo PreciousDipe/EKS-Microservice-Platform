@@ -1,0 +1,117 @@
+{{- /* product-service and order-service share one template; only product-service talks to Redis. */}}
+{{- $services := list
+  (dict "name" "product-service" "image" .Values.images.productService "values" .Values.backend.productService "redis" true)
+  (dict "name" "order-service" "image" .Values.images.orderService "values" .Values.backend.orderService "redis" false) }}
+{{- range $svc := $services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svc.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "shop.componentLabels" (dict "name" $svc.name "partOf" "app" "tier" "backend" "ctx" $) | nindent 4 }}
+spec:
+  # No "replicas": the HPA owns the pod count.
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $svc.name }}
+  strategy:
+    {{- include "shop.rollingUpdate" $ | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shop.componentLabels" (dict "name" $svc.name "partOf" "app" "tier" "backend" "ctx" $) | nindent 8 }}
+      annotations:
+        {{- include "shop.backendChecksum" $ | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "shop.podSecurity" (dict "uid" 1001 "gid" 1001) | nindent 8 }}
+      affinity:
+        {{- include "shop.antiAffinity" $svc.name | nindent 8 }}
+      # Waits for PostgreSQL, then applies the schema migration before the app starts.
+      initContainers:
+        - name: db-migrate
+          image: {{ required "images.postgres is required (set by the pipeline)" $.Values.images.postgres }}
+          imagePullPolicy: {{ $.Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h "$PGHOST" -p "$PGPORT"; do echo "waiting for postgres"; sleep 2; done
+              psql -X -v ON_ERROR_STOP=1 -f /migrations/init.sql
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            {{- include "shop.dbEnv" $ | nindent 12 }}
+          resources:
+            {{- toYaml $.Values.backend.migrate.resources | nindent 12 }}
+          securityContext:
+            {{- include "shop.containerSecurity" true | nindent 12 }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: {{ $svc.name }}
+          image: {{ include "shop.appImage" (dict "image" $svc.image "ctx" $) }}
+          imagePullPolicy: {{ $.Values.images.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $.Values.backend.port }}
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            {{- include "shop.dbEnv" $ | nindent 12 }}
+            {{- if $svc.redis }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.name }}
+                  key: REDIS_PASSWORD
+            - name: REDIS_URL
+              value: redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Liveness only checks the process: a database outage must not restart every pod.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sleep
+                  - "5"
+          resources:
+            {{- toYaml $svc.values.resources | nindent 12 }}
+          securityContext:
+            {{- include "shop.containerSecurity" true | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: migrations
+          configMap:
+            name: db-migrations
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+{{- end }}

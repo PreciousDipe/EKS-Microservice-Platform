@@ -1,0 +1,58 @@
+name: "Terraform Deploy (prod)"
+
+on:
+  push:
+    branches:
+      - production
+    paths:
+      - "infrastructure/**"
+      - ".github/workflows/terraform*.yaml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "apply (default) or plan-only"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - plan-only
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: terraform-apply-prod
+  cancel-in-progress: false
+
+jobs:
+  networking:
+    uses: ./.github/workflows/terraform.yaml
+    secrets: inherit
+    with:
+      layer: networking
+      env_key: shared
+      github_environment: production
+      apply: ${{ github.event_name == 'push' || inputs.action == 'apply' }}
+
+  eks:
+    needs: networking
+    uses: ./.github/workflows/terraform.yaml
+    secrets: inherit
+    with:
+      layer: eks
+      env_key: shared
+      github_environment: production
+      apply: ${{ github.event_name == 'push' || inputs.action == 'apply' }}
+
+  platform:
+    needs: eks
+    uses: ./.github/workflows/terraform.yaml
+    secrets: inherit
+    with:
+      layer: platform
+      env_key: shared
+      github_environment: production
+      apply: ${{ github.event_name == 'push' || inputs.action == 'apply' }}

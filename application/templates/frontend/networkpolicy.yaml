@@ -1,0 +1,22 @@
+{{- if .Values.networkPolicy.enabled }}
+# Only the Gateway's nginx pods may reach the frontend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-network-policy
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "shop.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "shop.gatewayPeer" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.frontend.port }}
+{{- end }}

@@ -1,0 +1,100 @@
+name: "Platform Tests"
+
+on:
+  workflow_run:
+    workflows: ["Helm Deploy"]
+    types: [completed]
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to test (prod is excluded: the tests delete pods and generate load)"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+      tests:
+        description: "Which test to run"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - zero-downtime
+          - self-healing
+          - autoscaling
+          - data-persistence
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: platform-tests-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: "eu-north-1"
+  CLUSTER_NAME: "eks-microservice-platform"
+
+jobs:
+  test:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    name: "tests -> ${{ inputs.environment || 'dev' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment == 'staging' && 'staging' || 'develop' }}
+    env:
+      NS: ${{ inputs.environment || 'dev' }}
+      SUITE: ${{ inputs.tests || 'all' }}
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Authenticate to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Connect to the cluster
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+
+      - name: Run tests
+        run: |
+          if [ "$SUITE" = all ]; then
+            tests="zero-downtime self-healing autoscaling data-persistence"
+          else
+            tests="$SUITE"
+          fi
+
+          rc=0
+          for t in $tests; do
+            echo "::group::$t"
+            bash "tests/$t.sh" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
+
+      - name: Test summary
+        if: always()
+        run: |
+          {
+            echo "### Platform tests: \`$NS\`"
+            echo
+            for f in results/0*.txt; do
+              [ -f "$f" ] || continue
+              echo "- **$(basename "$f" .txt)**: $(grep -h 'RESULT:' "$f" | tail -1 | sed 's/.*RESULT: //')"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-tests-${{ env.NS }}-${{ github.run_number }}
+          path: results/

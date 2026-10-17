@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/part-of: app
+    tier: backend
+    {{- include "shop.labels" . | nindent 4 }}
+data:
+  NODE_ENV: {{ .Values.backend.nodeEnv | quote }}
+  PORT: {{ .Values.backend.port | quote }}
+  PRODUCT_SERVICE_URL: {{ printf "http://product-service-svc:%v" .Values.backend.port | quote }}
+  PGHOST: {{ include "shop.postgresHost" . | quote }}
+  PGPORT: "5432"
+  PGDATABASE: {{ .Values.database.name | quote }}
+  REDIS_HOST: {{ include "shop.redisHost" . | quote }}
+  REDIS_PORT: "6379"
+  CACHE_TTL_SECONDS: {{ .Values.backend.cacheTtlSeconds | quote }}
+---
+# Schema migration run by the db-migrate init container, read from files/init.sql.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-migrations
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/part-of: app
+    tier: backend
+    {{- include "shop.labels" . | nindent 4 }}
+data:
+  init.sql: |-
+    {{- .Files.Get "files/init.sql" | nindent 4 }}

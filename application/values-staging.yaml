@@ -1,0 +1,14 @@
+backend:
+  productService:
+    hpa:
+      minReplicas: 2
+      maxReplicas: 4
+      targetCPU: 50
+  orderService:
+    hpa:
+      minReplicas: 2
+      maxReplicas: 4
+      targetCPU: 50
+
+database:
+  storage: 2Gi

@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "shop.componentLabels" (dict "name" "redis" "partOf" "cache" "tier" "cache" "ctx" $) | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  strategy:
+    {{- include "shop.rollingUpdate" . | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shop.componentLabels" (dict "name" "redis" "partOf" "cache" "tier" "cache" "ctx" $) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/cache/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # "redis" user in the alpine image
+        {{- include "shop.podSecurity" (dict "uid" 999 "gid" 1000 "fsGroup" 1000) | nindent 8 }}
+      containers:
+        - name: redis
+          image: {{ required "images.redis is required (set by the pipeline)" .Values.images.redis }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: REDIS_PASSWORD
+            - name: REDIS_MAXMEMORY
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: REDIS_MAXMEMORY
+            - name: REDIS_MAXMEMORY_POLICY
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: REDIS_MAXMEMORY_POLICY
+          # Kubernetes expands $(VAR) from the env above, so no value is hardcoded.
+          args:
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --maxmemory
+            - $(REDIS_MAXMEMORY)
+            - --maxmemory-policy
+            - $(REDIS_MAXMEMORY_POLICY)
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.cache.resources | nindent 12 }}
+          securityContext:
+            {{- include "shop.containerSecurity" true | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 200Mi
